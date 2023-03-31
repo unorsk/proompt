@@ -1,13 +1,12 @@
 {-# LANGUAGE OverloadedRecordDot #-}
--- {-# OPTIONS -fplugin=MonadicBang #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 import Data.Foldable (for_)
 import System.IO (stdin, hReady, hGetEcho, hSetEcho, hGetBuffering, hSetBuffering, BufferMode (NoBuffering), hFlush, stdout, )
 import Control.Exception.Base (bracket)
-import Data.List (isPrefixOf, drop, elemIndex)
--- import Data.Maybe (fromMaybe, mapMaybe)
--- import System.Timeout (timeout)
+import Data.List (isPrefixOf, elemIndex)
+import Data.Maybe (fromMaybe)
 
 data Options = Options {
   items :: [String]
@@ -46,35 +45,43 @@ moveDown whereTo = do
 
 readKey :: Int -> Int -> Int -> IO Int
 readKey initLine maxOption current = do
-  -- putStr ("\ESC[" <> show ((initLine - maxOption - 1) + current) <> ";1H")
-  putStr ("\ESC[" <> show initLine <> ";1H")
+  putStr "\ESC[s"--today
   hFlush stdout
   k <- getKey
   case k of
     "\ESC[A" -> do -- putStr "↑"
-      let next = current - 1
+      let next = if current == 0 then 1 else current - 1 -- 
       if current == 1 then readKey initLine maxOption current else do
         moveUp ((initLine - maxOption - 1) + next)
+        putStr "\ESC[u"
         readKey initLine maxOption next
     "\ESC[B" -> do -- putStr "↓"
       let next = current + 1
       if current == maxOption then readKey initLine maxOption current else do
         moveDown ((initLine - maxOption - 1) + next)
+        putStr "\ESC[u"
         readKey initLine maxOption next
     "\LF" -> do -- "\n"
-      -- putStr "RETURN"
+      putStr "\ESC[u"
       return current
     c        -> do
+      putStr "\ESC[u"
       putStr c
       readKey initLine maxOption current
     -- "\DEL"   -> putStr "⎋"
 
-printOptions :: Options -> IO ()
-printOptions opts = do
-  let items = zip [1::Int .. length (opts.items) + 1] opts.items
-  for_ items $ \(i :: Int, c :: String) -> do
-    let line = if i == opts.defaultChoice then "* " <> show i <> " " <> c else "  " <> show i <> " " <> c
-    putStrLn line
+printOptions :: [String] -> DefaultPrompt String -> Maybe (String -> String) -> IO ()
+printOptions opts defaultChoice modDef = do
+  let items = zip [1::Int .. length opts + 1] opts
+  for_ items $ \(i :: Int, val :: String) -> do
+    let c = fromMaybe id modDef val
+    case defaultChoice of
+      DefaultPrompt defChoice -> do
+          let line = if val == defChoice then "* " <> show i <> " " <> c else "  " <> show i <> " " <> c
+          putStrLn line
+      OptionalPrompt -> putStrLn $ "  " <> show i <> " " <> c
+      --MandatoryPrompt
+      _ -> putStrLn $ "  " <> show i <> " " <> c
 
 getCurrentLineSequence :: IO String
 getCurrentLineSequence = do
@@ -101,27 +108,24 @@ getCurrentLineNumber = do
 
 main :: IO ()
 main = do
+  result <- promptList "Hello: " ["Option one", "Option two", "Option three"] (DefaultPrompt "Option two") (Just (\c -> if c == "Option two" then "NONE" else c)) False
+  -- result <- promptList "Hello!" ["Option one", "Option two", "Option three"] OptionalPrompt  Nothing False
+  putStr result
 
-  -- c <-  getCurrentLineSequence
-  -- putStrLn c
-  l <- getCurrentLineNumber
-  putStrLn $ show l
-  -- hFlush stdout
-  putStrLn "Hello"
-  printOptions options
-
-  num <- upDownArrowsEntry l options.defaultChoice (length options.items)
-  
-  putStr ("\ESC[" <> show l <> ";1H")
-
-
-  putStrLn $ show num
 
 upDownArrowsEntry :: Int -> Int -> Int -> IO Int
 upDownArrowsEntry currentLine currentChoice maxChoice = do
-  bracket (hGetBuffering stdin) (hSetBuffering stdin) $ \_ -> do
+  bracket (do
+    putStr "\ESC[s"
+    hGetBuffering stdin) (\bufferMode -> do
+      hSetBuffering stdin bufferMode
+      putStr "\ESC[u"
+      ) $ \_ -> do
     hSetBuffering stdin NoBuffering
-    bracket (hGetEcho stdin) (hSetEcho stdin) $ \_ -> do
+    bracket (do
+      hGetEcho stdin) (\isEcho -> do
+        hSetEcho stdin isEcho
+        ) $ \_ -> do
       hSetEcho stdin False
       readKey currentLine maxChoice currentChoice
 
@@ -131,33 +135,25 @@ data DefaultPrompt t
   | MandatoryPrompt
   deriving (Eq, Functor)
   
--- promptList
---     :: String
---       -- ^ prompt
---     -> [String]
---       -- ^ choices
---     -> DefaultPrompt String
---       -- ^ optional default value
---     -> Maybe (String -> String)
---       -- ^ modify the default value to present in-prompt
---       -- e.g. empty string maps to "(none)", but only in the
---       -- prompt.
---     -> Bool
---       -- ^ whether to allow an 'other' option
---     -> IO String
-
-
-
--- promptList msg choices def modDef hasOther = do
---   printChoices choices
---   putStrLn $ msg ++ ":"
---   return ""
-
--- printChoices :: [String] -> DefaultPrompt String -> IO ()
--- printChoices opts defaultPrompt = do
---   let items = zip [1::Int .. length opts + 1] opts
---   let choicePrinter = 
-    
---   for_ items $ \(i :: Int, c :: String) -> do
---     let line = if c == opts.defaultChoice then "* " <> show i <> " " <> c else "  " <> show i <> " " <> c
---     putStrLn line
+promptList
+    :: String
+      -- ^ prompt
+    -> [String]
+      -- ^ choices
+    -> DefaultPrompt String
+      -- ^ optional default value
+    -> Maybe (String -> String)
+      -- ^ modify the default value to present in-prompt
+      -- e.g. empty string maps to "(none)", but only in the
+      -- prompt.
+    -> Bool
+      -- ^ whether to allow an 'other' option
+    -> IO String
+promptList msg choices def modDef hasOther = do
+  printOptions choices def modDef
+  putStr $ msg ++ ":"
+  -- TODO determine default index based on  DefaultPrompt maybe?
+  let defaultIndex = 0
+  l <- getCurrentLineNumber
+  n <- upDownArrowsEntry l defaultIndex (length options.items)
+  return (choices!!(n-1))
